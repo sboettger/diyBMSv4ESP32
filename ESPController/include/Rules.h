@@ -73,6 +73,8 @@ public:
     InternalErrorCode ErrorCodes[1 + MAXIMUM_InternalErrorCode];
     InternalWarningCode WarningCodes[1 + MAXIMUM_InternalWarningCode];
     bool moduleHasExternalTempSensor;
+
+    //Number of modules which have not yet reported back to the controller
     uint8_t invalidModuleCount;
 
     int8_t numberOfActiveErrors;

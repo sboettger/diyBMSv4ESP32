@@ -60,7 +60,7 @@ HAL_ESP32 *DIYBMSServer::_hal = 0;
 
 String DIYBMSServer::uuidToString(uint8_t *uuidLocation)
 {
-  const char hexchars[]="0123456789abcdef";
+  const char hexchars[] = "0123456789abcdef";
   String string = "";
   int i;
   for (i = 0; i < 16; i++)
@@ -90,14 +90,15 @@ void DIYBMSServer::generateUUID()
 
   //ESP32 has inbuilt random number generator
   //https://techtutorialsx.com/2017/12/22/esp32-arduino-random-number-generation/
-  for (uint8_t x = 0; x < 16; x++) {
+  for (uint8_t x = 0; x < 16; x++)
+  {
     uuidNumber[x] = random(0xFF);
   }
 
   UUIDString = uuidToString(uuidNumber);
 
   //481efb3f-0400-0000-101f-fb3fd01efb3f
-  UUIDStringLast2Chars=UUIDString.substring(34);
+  UUIDStringLast2Chars = UUIDString.substring(34);
 }
 
 bool DIYBMSServer::validateXSS(AsyncWebServerRequest *request)
@@ -427,34 +428,28 @@ void DIYBMSServer::saveInfluxDBSetting(AsyncWebServerRequest *request)
     _mysettings->influxdb_enabled = false;
   }
 
-  if (request->hasParam("influxPort", true))
+  if (request->hasParam("influxUrl", true))
   {
-    AsyncWebParameter *p1 = request->getParam("influxPort", true);
-    _mysettings->influxdb_httpPort = p1->value().toInt();
-  }
-
-  if (request->hasParam("influxServer", true))
-  {
-    AsyncWebParameter *p1 = request->getParam("influxServer", true);
-    p1->value().toCharArray(_mysettings->influxdb_host, sizeof(_mysettings->influxdb_host));
+    AsyncWebParameter *p1 = request->getParam("influxUrl", true);
+    p1->value().toCharArray(_mysettings->influxdb_serverurl, sizeof(_mysettings->influxdb_serverurl));
   }
 
   if (request->hasParam("influxDatabase", true))
   {
     AsyncWebParameter *p1 = request->getParam("influxDatabase", true);
-    p1->value().toCharArray(_mysettings->influxdb_database, sizeof(_mysettings->influxdb_database));
+    p1->value().toCharArray(_mysettings->influxdb_databasebucket, sizeof(_mysettings->influxdb_databasebucket));
   }
 
-  if (request->hasParam("influxUsername", true))
+  if (request->hasParam("influxOrgId", true))
   {
-    AsyncWebParameter *p1 = request->getParam("influxUsername", true);
-    p1->value().toCharArray(_mysettings->influxdb_user, sizeof(_mysettings->influxdb_user));
+    AsyncWebParameter *p1 = request->getParam("influxOrgId", true);
+    p1->value().toCharArray(_mysettings->influxdb_orgid, sizeof(_mysettings->influxdb_orgid));
   }
 
-  if (request->hasParam("influxPassword", true))
+  if (request->hasParam("influxToken", true))
   {
-    AsyncWebParameter *p1 = request->getParam("influxPassword", true);
-    p1->value().toCharArray(_mysettings->influxdb_password, sizeof(_mysettings->influxdb_password));
+    AsyncWebParameter *p1 = request->getParam("influxToken", true);
+    p1->value().toCharArray(_mysettings->influxdb_apitoken, sizeof(_mysettings->influxdb_apitoken));
   }
 
   saveConfiguration();
@@ -1427,12 +1422,10 @@ void DIYBMSServer::integration(AsyncWebServerRequest *request)
 
   JsonObject influxdb = root.createNestedObject("influxdb");
   influxdb["enabled"] = _mysettings->influxdb_enabled;
-  influxdb["port"] = _mysettings->influxdb_httpPort;
-  influxdb["server"] = _mysettings->influxdb_host;
-  influxdb["database"] = _mysettings->influxdb_database;
-  influxdb["username"] = _mysettings->influxdb_user;
-  //We don't output the password in the json file as this could breach security
-  //influxdb["password"] = _mysettings->influxdb_password;
+  influxdb["url"] = _mysettings->influxdb_serverurl;
+  influxdb["bucket"] = _mysettings->influxdb_databasebucket;
+  influxdb["apitoken"] = _mysettings->influxdb_apitoken;
+  influxdb["orgid"] = _mysettings->influxdb_orgid;
 
   serializeJson(doc, *response);
   request->send(response);
@@ -1707,14 +1700,13 @@ void DIYBMSServer::monitor2(AsyncWebServerRequest *request)
   PrintStreamComma(response, "\"oos\":", _receiveProc->totalOutofSequenceErrors);
 
   PrintStreamComma(response, "\"uptime\":", (uint32_t)(esp_timer_get_time() / (uint64_t)1e+6));
-  
+
   //Output last 2 charaters from security cookie, to allow brower to detect when its
   //no longer in sync with the back end and report warning.
   //Technically this downgrades the complexity of the XSS key, as it reduces key length.
   response->print("\"sec\":\"");
   response->print(UUIDStringLast2Chars);
   response->print("\",");
-
 
   response->print(F("\"errors\":["));
   uint8_t count = 0;
@@ -2295,7 +2287,6 @@ void DIYBMSServer::StartServer(AsyncWebServer *webserver,
                     request->send(response);
                   }
                 });
-
 
   _myserver->on("/style.css", HTTP_GET,
                 [](AsyncWebServerRequest *request)

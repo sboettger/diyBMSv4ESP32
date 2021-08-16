@@ -52,7 +52,7 @@ const uint8_t diyBMSCurrentMonitorModbusAddress = 90;
 
 #include <ESPAsyncWebServer.h>
 #include <AsyncMqttClient.h>
-#include <ArduinoOTA.h>
+//#include <ArduinoOTA.h>
 #include <SerialEncoder.h>
 #include <cppQueue.h>
 
@@ -66,12 +66,20 @@ const uint8_t diyBMSCurrentMonitorModbusAddress = 90;
 
 #include "tft.h"
 
+#include <HTTPClient.h>
+
 const uart_port_t rs485_uart_num = uart_port_t::UART_NUM_1;
 
 HAL_ESP32 hal;
 
 volatile bool emergencyStop = false;
 bool _sd_card_installed = false;
+
+//Used for WIFI hostname
+char hostname[16];
+
+HTTPClient *_influx_httpClient = nullptr;
+WiFiClient *_influx_wifiClient = nullptr;
 
 extern bool _tft_screen_available;
 
@@ -160,7 +168,7 @@ void voltageandstatussnapshot_task(void *param)
     //Wait until this task is triggered, when
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    ESP_LOGD(TAG, "Snap");
+    //ESP_LOGD(TAG, "Snap");
 
     if (_tft_screen_available)
     {
@@ -1390,13 +1398,12 @@ WiFi.status() only returns:
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
 
-  char hostname[40];
-
   uint32_t chipId = 0;
   for (int i = 0; i < 17; i = i + 8)
   {
     chipId |= ((ESP.getEfuseMac() >> (40 - i)) & 0xff) << i;
   }
+  // DIYBMS-00000000
   sprintf(hostname, "DIYBMS-%08X", chipId);
   WiFi.setHostname(hostname);
 
@@ -1428,6 +1435,7 @@ void connectToMqtt()
   }
 }
 
+/*
 static AsyncClient *aClient = NULL;
 
 void setupInfluxClient()
@@ -1489,7 +1497,12 @@ void setupInfluxClient()
                          for (uint8_t i = 0; i < mysettings.totalNumberOfSeriesModules; i++)
                          {
                            //Data in LINE PROTOCOL format https://docs.influxdata.com/influxdb/v1.7/write_protocols/line_protocol_tutorial/
-                           poststring = poststring + "cells," + "cell=" + String(bank) + "_" + String(i) + " v=" + String((float)cmi[i].voltagemV / 1000.0, 3) + ",i=" + String(cmi[i].internalTemp) + "i" + ",e=" + String(cmi[i].externalTemp) + "i" + ",b=" + (cmi[i].inBypass ? String("true") : String("false")) + "\n";
+                           poststring = poststring + "cells," + "cell=" + String(bank) + "_" 
+                           + String(i) 
+                           + " v=" + String((float)cmi[i].voltagemV / 1000.0, 3) 
+                           + ",i=" + String(cmi[i].internalTemp) + "i" 
+                           + ",e=" + String(cmi[i].externalTemp) + "i" 
+                           + ",b=" + (cmi[i].inBypass ? String("true") : String("false")) + "\n";
                          }
                        }
 
@@ -1507,38 +1520,139 @@ void setupInfluxClient()
                      },
                      NULL);
 }
+*/
+
+static char invalidChars[] = "$&+,/:;=?@ <>#%{}|\\^~[]`";
+
+static char hex_digit(char c)
+{
+  return "0123456789ABCDEF"[c & 0x0F];
+}
+
+String urlEncode(const char *src)
+{
+  int n = 0;
+  char c, *s = (char *)src;
+  while ((c = *s++))
+  {
+    if (strchr(invalidChars, c))
+    {
+      n++;
+    }
+  }
+  String ret;
+  ret.reserve(strlen(src) + 2 * n + 1);
+  s = (char *)src;
+  while ((c = *s++))
+  {
+    if (strchr(invalidChars, c))
+    {
+      ret += '%';
+      ret += hex_digit(c >> 4);
+      ret += hex_digit(c);
+    }
+    else
+      ret += c;
+  }
+  return ret;
+}
 
 void influxdb_task(void *param)
 {
   for (;;)
   {
-    //Delay 30 seconds
-    vTaskDelay(pdMS_TO_TICKS(30000));
+    //Delay 15 seconds
+    vTaskDelay(pdMS_TO_TICKS(15000));
 
-    if (mysettings.influxdb_enabled && WiFi.isConnected())
+    if (mysettings.influxdb_enabled && WiFi.isConnected() && rules.invalidModuleCount == 0)
     {
+
+      bool https = String(mysettings.influxdb_serverurl).startsWith("https");
+      if (https)
+      {
+        if (_influx_wifiClient == nullptr)
+        {
+          WiFiClientSecure *wifiClientSec = new WiFiClientSecure;
+          wifiClientSec->setInsecure();
+          _influx_wifiClient = wifiClientSec;
+          ESP_LOGD(TAG, "Created WiFiClientSecure");
+        }
+      }
+      else
+      {
+        _influx_wifiClient = new WiFiClient;
+        ESP_LOGD(TAG, "Created WiFiClient (standard)");
+      }
+
+      if (_influx_httpClient == nullptr)
+      {
+        _influx_httpClient = new HTTPClient;
+        _influx_httpClient->setReuse(true);
+        _influx_httpClient->setUserAgent(String(hostname));
+
+        ESP_LOGD(TAG, "Created HTTPClient");
+      }
+
       ESP_LOGI(TAG, "Send Influxdb data");
 
-      setupInfluxClient();
+      String URL = String(mysettings.influxdb_serverurl) + String("?org=") + urlEncode(mysettings.influxdb_orgid) + String("&bucket=") + urlEncode(mysettings.influxdb_databasebucket);
+      // + String("&precision=s");
 
-      if (!aClient->connect(mysettings.influxdb_host, mysettings.influxdb_httpPort))
+      if (_influx_httpClient->begin(*_influx_wifiClient, URL))
       {
-        ESP_LOGE(TAG, "Influxdb connect fail");
-        AsyncClient *client = aClient;
-        aClient = NULL;
-        delete client;
+        //http.setUserAgent(hostname);
+        _influx_httpClient->addHeader(F("Content-Type"), F("text/plain"));
+
+        //Don't use the inbuilt setAuthorization function as it prepends the word "basic" to the value and we need TOKEN
+        String token = String("Token ") + String(mysettings.influxdb_apitoken);
+        _influx_httpClient->addHeader("Authorization", token);
+
+        // Data to send with HTTP POST
+        String poststring;
+
+        for (uint8_t bank = 0; bank < mysettings.totalNumberOfBanks; bank++)
+        {
+          //TODO: We should send a request per bank not just a single POST as we are likely to exceed capabilities of ESP
+          for (uint8_t i = 0; i < mysettings.totalNumberOfSeriesModules; i++)
+          {
+            if (cmi[i].valid)
+            {
+              //Data in LINE PROTOCOL format https://docs.influxdata.com/influxdb/v1.7/write_protocols/line_protocol_tutorial/
+              poststring = poststring + "cells," + "cell=" + String(bank) + "_" + String(i) + " v=" + String((float)cmi[i].voltagemV / 1000.0, 3) + ",i=" + String(cmi[i].internalTemp) + "i" + ",e=" + String(cmi[i].externalTemp) + "i" + ",b=" + (cmi[i].inBypass ? String("true") : String("false")) + "\n";
+            }
+          }
+        }
+
+        //ESP_LOGD(TAG, "POST=%s", poststring.c_str());
+        //ESP_LOGD(TAG, "About to POST");
+        // Send HTTP POST request
+        int httpResponseCode = _influx_httpClient->POST(poststring);
+
+        //ESP_LOGD(TAG, "Reply=%s", _influx_httpClient->getString().c_str());
+
+        //Expect httpResponseCode = 204
+        if (httpResponseCode != 204)
+        {
+          ESP_LOGE(TAG, "Fail Response Code=%i", httpResponseCode);
+        }
+
+        _influx_httpClient->end();
+      }
+      else
+      {
+        ESP_LOGE(TAG, "httpClient begin fail");
       }
     }
   }
 }
 
+/*
+
 void SetupOTA()
 {
 
   ArduinoOTA.setPort(3232);
-
   ArduinoOTA.setPassword("1jiOOx12AQgEco4e");
-
   ArduinoOTA
       .onStart([]()
                {
@@ -1574,6 +1688,7 @@ void SetupOTA()
   ArduinoOTA.setMdnsEnabled(true);
   ArduinoOTA.begin();
 }
+*/
 
 void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info)
 {
@@ -1601,7 +1716,7 @@ void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info)
 
   connectToMqtt();
 
-  SetupOTA();
+  //SetupOTA();
 
   // Set up mDNS responder:
   // - first argument is the domain name, in this example
@@ -1656,7 +1771,7 @@ void mqtt2(void *param)
 
     if (mysettings.mqtt_enabled && mqttClient.connected())
     {
-      ESP_LOGI(TAG, "Send MQTT Status");
+      //ESP_LOGI(TAG, "Send MQTT Status");
 
       char topic[80];
       char jsonbuffer[400];
@@ -2578,10 +2693,9 @@ void LoadConfiguration()
   strcpy(mysettings.mqtt_password, "emonpimqtt2016");
 
   mysettings.influxdb_enabled = false;
-  strcpy(mysettings.influxdb_host, "myinfluxserver");
-  strcpy(mysettings.influxdb_database, "database");
-  strcpy(mysettings.influxdb_user, "user");
-  strcpy(mysettings.influxdb_password, "");
+  strcpy(mysettings.influxdb_serverurl, "https://eu-central-1-1.aws.cloud2.influxdata.com");
+  strcpy(mysettings.influxdb_databasebucket, "bucketname");
+  strcpy(mysettings.influxdb_orgid, "organisation");
 
   mysettings.timeZone = 0;
   mysettings.minutesTimeZone = 0;
@@ -3292,8 +3406,8 @@ TEST CAN BUS
     connectToMqtt();
 
     xTaskCreate(enqueue_task, "enqueue", 1024, nullptr, configMAX_PRIORITIES / 2, &enqueue_task_handle);
-    xTaskCreate(rules_task, "rules", 1800, nullptr, configMAX_PRIORITIES - 5, &rule_task_handle);
-    xTaskCreate(influxdb_task, "influxdb", 1500, nullptr, 1, &influxdb_task_handle);
+    xTaskCreate(rules_task, "rules", 2048, nullptr, configMAX_PRIORITIES - 5, &rule_task_handle);
+    xTaskCreate(influxdb_task, "influxdb", 6000, nullptr, 1, &influxdb_task_handle);
 
     //We have just started...
     SetControllerState(ControllerState::Stabilizing);
@@ -3423,7 +3537,7 @@ void loop()
     ResetWifi = false;
   }
 
-  ArduinoOTA.handle();
+  //ArduinoOTA.handle();
 
   // Call update to receive, decode and process incoming packets
   myPacketSerial.checkInputStream();
