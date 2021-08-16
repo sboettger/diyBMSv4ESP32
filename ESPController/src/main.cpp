@@ -996,11 +996,15 @@ void replyqueue_task(void *param)
       vTaskDelay(pdMS_TO_TICKS(10));
     }
 
+/*
     //Debug - copy module zero to all the other cells for testing
+    //large capacity battery banks
     for (size_t i = 1; i < TotalNumberOfCells(); i++)
     {
       memcpy(&cmi[i], &cmi[0], sizeof(CellModuleInfo));
     }
+*/
+
   }
 }
 

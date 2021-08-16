@@ -84,7 +84,7 @@ void influxdb_onConnect(void *arg, AsyncClient *client)
 
     while (i < TotalNumberOfCells() && counter < 16)
     {
-        //ESP_LOGI(TAG, "Send Influx for module %u", i);
+        //ESP_LOGD(TAG, "Send Influx for module %u", i);
         //Only send valid module data
         if (cmi[i].valid)
         {
