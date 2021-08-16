@@ -316,8 +316,8 @@
             <p>Influx DB version 2 protocol is supported. Server URL should be the full URL to the <a target="_blank"
                     rel="noreferrer"
                     href="https://docs.influxdata.com/influxdb/v2.0/write-data/developer-tools/api/">write API</a>, for
-                example https://eu-central-1-1.aws.cloud2.influxdata.com/api/v2/write</p>
-            <p>HTTP and HTTPS are both supported, for local servers use the IP address of the server instead of a domain name.</p>
+                example http://192.168.0.49:8086/api/v2/write</p>
+            <p>Only HTTP is supported, for local servers use the IP address not a domain name.</p>
             <form id="influxForm" method="POST" action="saveinfluxdb.json" autocomplete="off">
                 <div class="settings">
                     <div>
@@ -326,7 +326,7 @@
                     </div>
                     <div>
                         <label for="influxUrl">Influx DB write API URL</label>
-                        <input type="input" name="influxUrl" id="influxUrl" value="influx" required="" maxlength="128">
+                        <input type="input" name="influxUrl" id="influxUrl" value="influx" required="" maxlength="128" title="Example:  http://192.168.0.49:8086/api/v2/write">
                     </div>
                     <div>
                         <label for="influxToken">API authentication token</label>

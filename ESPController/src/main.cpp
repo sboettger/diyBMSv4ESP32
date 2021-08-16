@@ -1435,93 +1435,6 @@ void connectToMqtt()
   }
 }
 
-/*
-static AsyncClient *aClient = NULL;
-
-void setupInfluxClient()
-{
-
-  if (aClient) //client already exists
-    return;
-
-  aClient = new AsyncClient();
-  if (!aClient) //could not allocate client
-    return;
-
-  aClient->onError([](void *arg, AsyncClient *client, err_t error)
-                   {
-                     ESP_LOGE(TAG, "Influx connect error");
-
-                     aClient = NULL;
-                     delete client;
-                   },
-                   NULL);
-
-  aClient->onConnect([](void *arg, AsyncClient *client)
-                     {
-                       ESP_LOGI(TAG, "Influx connected");
-
-                       //Send the packet here
-
-                       aClient->onError(NULL, NULL);
-
-                       client->onDisconnect([](void *arg, AsyncClient *c)
-                                            {
-                                              ESP_LOGI(TAG, "Influx disconnected");
-                                              aClient = NULL;
-                                              delete c;
-                                            },
-                                            NULL);
-
-                       client->onData([](void *arg, AsyncClient *c, void *data, size_t len)
-                                      {
-                                        //Data received
-                                        ESP_LOGD(TAG, "Influx data received");
-                                        //SERIAL_DEBUG.print(F("\r\nData: "));
-                                        //SERIAL_DEBUG.println(len);
-                                        //uint8_t* d = (uint8_t*)data;
-                                        //for (size_t i = 0; i < len; i++) {SERIAL_DEBUG.write(d[i]);}
-                                      },
-                                      NULL);
-
-                       //send the request
-
-                       //Construct URL for the influxdb
-                       //See API at https://docs.influxdata.com/influxdb/v1.7/tools/api/#write-http-endpoint
-
-                       String poststring;
-
-                       for (uint8_t bank = 0; bank < mysettings.totalNumberOfBanks; bank++)
-                       {
-                         //TODO: We should send a request per bank not just a single POST as we are likely to exceed capabilities of ESP
-                         for (uint8_t i = 0; i < mysettings.totalNumberOfSeriesModules; i++)
-                         {
-                           //Data in LINE PROTOCOL format https://docs.influxdata.com/influxdb/v1.7/write_protocols/line_protocol_tutorial/
-                           poststring = poststring + "cells," + "cell=" + String(bank) + "_" 
-                           + String(i) 
-                           + " v=" + String((float)cmi[i].voltagemV / 1000.0, 3) 
-                           + ",i=" + String(cmi[i].internalTemp) + "i" 
-                           + ",e=" + String(cmi[i].externalTemp) + "i" 
-                           + ",b=" + (cmi[i].inBypass ? String("true") : String("false")) + "\n";
-                         }
-                       }
-
-                       //TODO: Need to URLEncode these values
-                       String url = "/write?db=" + String(mysettings.influxdb_database) + "&u=" + String(mysettings.influxdb_user) + "&p=" + String(mysettings.influxdb_password);
-                       String header = "POST " + url + " HTTP/1.1\r\n" + "Host: " + String(mysettings.influxdb_host) + "\r\n" + "Connection: close\r\n" + "Content-Length: " + poststring.length() + "\r\n" + "Content-Type: text/plain\r\n" + "\r\n";
-
-                       //SERIAL_DEBUG.println(header.c_str());
-                       //SERIAL_DEBUG.println(poststring.c_str());
-
-                       client->write(header.c_str());
-                       client->write(poststring.c_str());
-
-                       ESP_LOGD(TAG, "Influx data sent");
-                     },
-                     NULL);
-}
-*/
-
 static char invalidChars[] = "$&+,/:;=?@ <>#%{}|\\^~[]`";
 
 static char hex_digit(char c)
@@ -1557,6 +1470,70 @@ String urlEncode(const char *src)
   return ret;
 }
 
+static AsyncClient *influx_Client = NULL;
+static int influx_port;
+static String influx_host;
+
+static void influxdb_onData(void *arg, AsyncClient *client, void *data, size_t len)
+{
+  ESP_LOGD(TAG, "Influx data received");
+  //Serial.printf("\n data received from %s \n", client->remoteIP().toString().c_str());
+  //Serial.write((uint8_t*)data, len);
+};
+
+void influxdb_onError(void *arg, AsyncClient *client, err_t error)
+{
+  ESP_LOGE(TAG, "Influx connect error");
+
+  influx_Client = NULL;
+  delete client;
+};
+
+void influxdb_onDisconnect(void *arg, AsyncClient *c)
+{
+  ESP_LOGI(TAG, "Influx disconnected");
+  influx_Client = NULL;
+  delete c;
+};
+
+//Called when the TCP stack connects to INFLUXDB server
+void influxdb_onConnect(void *arg, AsyncClient *client)
+{
+  ESP_LOGD(TAG, "Influx connected");
+
+  String poststring;
+
+  for (uint8_t bank = 0; bank < mysettings.totalNumberOfBanks; bank++)
+  {
+    //TODO: We should send a request per bank not just a single POST as we are likely to exceed capabilities of ESP
+    for (uint8_t i = 0; i < mysettings.totalNumberOfSeriesModules; i++)
+    {
+      if (cmi[i].valid)
+      {
+        //Data in LINE PROTOCOL format https://docs.influxdata.com/influxdb/v2.0/reference/syntax/line-protocol/
+
+        // Example
+        //  myMeasurement,tag1=value1,tag2=value2 fieldKey="fieldValue" 1556813561098000000
+        poststring = poststring + "cells," + "cell=" + String(bank) + "_" + String(i) + " v=" + String((float)cmi[i].voltagemV / 1000.0, 3) + ",i=" + String(cmi[i].internalTemp) + "i" + ",e=" + String(cmi[i].externalTemp) + "i" + ",b=" + (cmi[i].inBypass ? String("true") : String("false")) + "\n";
+      }
+    }
+  }
+
+  String url = String(mysettings.influxdb_serverurl) + String("?org=") + urlEncode(mysettings.influxdb_orgid) + String("&bucket=") + urlEncode(mysettings.influxdb_databasebucket);
+  String token = String("Authorization: Token ") + String(mysettings.influxdb_apitoken);
+
+  //TODO: Need to URLEncode these values
+  String header = "POST " + url + " HTTP/1.1\r\n" + "Host: " + influx_host + "\r\n" + "Connection: close\r\n" + token + "\r\nContent-Length: " + poststring.length() + "\r\n" + "Content-Type: text/plain\r\n" + "\r\n";
+
+  //SERIAL_DEBUG.println(header.c_str());
+  //SERIAL_DEBUG.println(poststring.c_str());
+
+  client->write(header.c_str());
+  client->write(poststring.c_str());
+
+  ESP_LOGD(TAG, "Influx data sent");
+}
+
 void influxdb_task(void *param)
 {
   for (;;)
@@ -1564,88 +1541,67 @@ void influxdb_task(void *param)
     //Delay 15 seconds
     vTaskDelay(pdMS_TO_TICKS(15000));
 
-    if (mysettings.influxdb_enabled && WiFi.isConnected() && rules.invalidModuleCount == 0)
+    if (mysettings.influxdb_enabled && WiFi.isConnected() && rules.invalidModuleCount == 0 && _controller_state == ControllerState::Running)
     {
 
-      bool https = String(mysettings.influxdb_serverurl).startsWith("https");
-      if (https)
+      if (influx_Client == NULL)
       {
-        if (_influx_wifiClient == nullptr)
+        //Create new client
+        influx_Client = new AsyncClient();
+
+        String url = String(mysettings.influxdb_serverurl);
+
+        // check for : (http: or https:
+        int index = url.indexOf(':');
+        if (index < 0)
         {
-          WiFiClientSecure *wifiClientSec = new WiFiClientSecure;
-          wifiClientSec->setInsecure();
-          _influx_wifiClient = wifiClientSec;
-          ESP_LOGD(TAG, "Created WiFiClientSecure");
+          ESP_LOGE(TAG, "Failed to parse protocol");
         }
-      }
-      else
-      {
-        _influx_wifiClient = new WiFiClient;
-        ESP_LOGD(TAG, "Created WiFiClient (standard)");
-      }
-
-      if (_influx_httpClient == nullptr)
-      {
-        _influx_httpClient = new HTTPClient;
-        _influx_httpClient->setReuse(true);
-        _influx_httpClient->setUserAgent(String(hostname));
-
-        ESP_LOGD(TAG, "Created HTTPClient");
-      }
-
-      ESP_LOGI(TAG, "Send Influxdb data");
-
-      String URL = String(mysettings.influxdb_serverurl) + String("?org=") + urlEncode(mysettings.influxdb_orgid) + String("&bucket=") + urlEncode(mysettings.influxdb_databasebucket);
-      // + String("&precision=s");
-
-      if (_influx_httpClient->begin(*_influx_wifiClient, URL))
-      {
-        //http.setUserAgent(hostname);
-        _influx_httpClient->addHeader(F("Content-Type"), F("text/plain"));
-
-        //Don't use the inbuilt setAuthorization function as it prepends the word "basic" to the value and we need TOKEN
-        String token = String("Token ") + String(mysettings.influxdb_apitoken);
-        _influx_httpClient->addHeader("Authorization", token);
-
-        // Data to send with HTTP POST
-        String poststring;
-
-        for (uint8_t bank = 0; bank < mysettings.totalNumberOfBanks; bank++)
+        else
         {
-          //TODO: We should send a request per bank not just a single POST as we are likely to exceed capabilities of ESP
-          for (uint8_t i = 0; i < mysettings.totalNumberOfSeriesModules; i++)
+          String _protocol = url.substring(0, index);
+
+          influx_port = 80;
+
+          url.remove(0, (index + 3)); // remove http:// or https://
+
+          index = url.indexOf('/');
+          String host = url.substring(0, index);
+          url.remove(0, index); // remove host part
+
+          // get port
+          index = host.indexOf(':');
+          if (index >= 0)
           {
-            if (cmi[i].valid)
-            {
-              //Data in LINE PROTOCOL format https://docs.influxdata.com/influxdb/v1.7/write_protocols/line_protocol_tutorial/
-              poststring = poststring + "cells," + "cell=" + String(bank) + "_" + String(i) + " v=" + String((float)cmi[i].voltagemV / 1000.0, 3) + ",i=" + String(cmi[i].internalTemp) + "i" + ",e=" + String(cmi[i].externalTemp) + "i" + ",b=" + (cmi[i].inBypass ? String("true") : String("false")) + "\n";
-            }
+            influx_host = host.substring(0, index); // hostname
+            host.remove(0, (index + 1));            // remove hostname + :
+            influx_port = host.toInt();             // get port
           }
+          else
+          {
+            influx_host = host;
+          }
+
+          ESP_LOGI(TAG, "Influx host %s port %i", influx_host.c_str(), influx_port);
+
+          influx_Client->onData(&influxdb_onData, influx_Client);
+          influx_Client->onConnect(&influxdb_onConnect, influx_Client);
+          influx_Client->onDisconnect(&influxdb_onDisconnect, influx_Client);
+          influx_Client->onError(&influxdb_onError, influx_Client);
         }
 
-        //ESP_LOGD(TAG, "POST=%s", poststring.c_str());
-        //ESP_LOGD(TAG, "About to POST");
-        // Send HTTP POST request
-        int httpResponseCode = _influx_httpClient->POST(poststring);
-
-        //ESP_LOGD(TAG, "Reply=%s", _influx_httpClient->getString().c_str());
-
-        //Expect httpResponseCode = 204
-        if (httpResponseCode != 204)
+        //Now trigger the connection, and then send the data
+        if (!influx_Client->connect(influx_host.c_str(), influx_port))
         {
-          ESP_LOGE(TAG, "Fail Response Code=%i", httpResponseCode);
+          ESP_LOGE(TAG, "Influxdb connect fail");
+          AsyncClient *client = influx_Client;
+          influx_Client = NULL;
+          delete client;
         }
-
-        _influx_httpClient->end();
-      }
-      else
-      {
-        ESP_LOGE(TAG, "httpClient begin fail");
       }
     }
   }
 }
-
 /*
 
 void SetupOTA()
